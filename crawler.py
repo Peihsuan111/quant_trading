@@ -10,7 +10,9 @@ from bs4 import BeautifulSoup
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.common.by import By
 import time
-
+import datetime
+from dateutil import relativedelta
+import requests
 
 def driver_setup(headless=True):
     chrome_options = Options()
@@ -21,7 +23,6 @@ def driver_setup(headless=True):
     path = 'chromedriver'
     driver = webdriver.Chrome(executable_path=path, options=chrome_options)
     return driver
-
 
 def setup_page(driver, chosn_yr, chosn_mt):
     # Input ticker
@@ -42,6 +43,12 @@ def setup_page(driver, chosn_yr, chosn_mt):
     time.sleep(3)
     return driver
 
+def load_page():
+    driver = driver_setup(False)
+    web = 'https://www.twse.com.tw/zh/trading/historical/stock-day.html'
+    driver.get(web)
+    time.sleep(2)
+    return driver
 
 def connect2db(data_to_insert):
     with open("./config.json") as f:
@@ -57,19 +64,70 @@ def connect2db(data_to_insert):
     result = collection.insert_many(data_to_insert)
     return result
 
+def request_go(ticker, start, end):
+    """_summary_
 
-driver = driver_setup(False)
-twse_web = 'https://www.twse.com.tw/zh/trading/historical/stock-day.html'
-driver.get(twse_web)
-time.sleep(2)
+    Args:
+        ticker (str): _description_
+        start (str): dataset from. example. 2023-01
+        end (str): dataset to. example. 2023-01
+    """
+    # Scrape data
+    dic = dict()
+    st_y, st_m = start.split("-")
+    ed_y, ed_m = end.split("-")
+    start_dt = datetime.date(int(st_y),int(st_m),1)
+    end_dt = datetime.date(int(ed_y),int(ed_m),1)
+    delta = relativedelta.relativedelta(end_dt, start_dt)
+    diff_mth = delta.years * 12 + delta.months
+    chosn_time = list()
+    for x in range(diff_mth+1):
+        chosn_time.append((start_dt + relativedelta.relativedelta(months=x)).strftime('%Y%m%d'))
 
-ticker = "2330"
-# Scrape data
-dic = dict()
+    # (A)using requests
+    for date_str in chosn_time:
+        print(date_str)
+        api = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={}&stockNo={}&response=json".format(date_str, ticker)
+        r = requests.get(api)
+        data = r.json()
+        for x in data['data']:
+            dic[x[0]] = x[1:]
 
-# chosn_yr = "2022"
-for chosn_yr in ["2020", "2021", "2022"]:
-    for chosn_mt in range(1, 9):
+    # prepare to insert data
+    data_to_insert = []
+    for k, v in dic.items():
+        y, m, d = [int(i) for i in k.split('/')]
+        date_date = datetime.datetime(y+1911, m, d)
+        to_ins = {
+            'ticker': ticker,
+            'date': date_date,
+            'volumn': int(v[0].replace(',', '')),
+            'total_amount': int(v[1].replace(',', '')),
+            'open': float(v[2].replace(',', '')),
+            'high': float(v[3].replace(',', '')),
+            'low': float(v[4].replace(',', '')),
+            'close': float(v[5].replace(',', '')),
+            'spread': float(v[6].replace(',', '').replace('X', '')),
+            'turnover': int(v[7].replace(',', ''))
+        }
+        data_to_insert.append(to_ins)
+    return data_to_insert
+
+def selenium_go(ticker, chosn_yr, mth_ls):
+    """_summary_
+
+    Args:
+        ticker (str): _description_
+        yr (str): year. example. "2023"
+        mth_ls (list): list of month. example. [1,2,3,4,5]
+    """
+    driver = load_page()
+
+    # Scrape data
+    dic = dict()
+    
+    # (B)using selenium
+    for chosn_mt in mth_ls:
         print(f'process | year:{chosn_yr} month:{chosn_mt}')
         driver = setup_page(driver, chosn_yr, str(chosn_mt))
         table_elem = driver.find_element(
@@ -81,30 +139,35 @@ for chosn_yr in ["2020", "2021", "2022"]:
                 tmp_ls.append(td.text)
             dic[tmp_ls[0]] = tmp_ls[1:]
 
-# Insert into mongod
-# Replace 'mongodb://localhost:27017/' with your MongoDB connection string
-data_to_insert = []
-for k, v in dic.items():
-    y, m, d = [int(i) for i in k.split('/')]
-    date_date = datetime.datetime(y+1911, m, d)
-    to_ins = {
-        'ticker': ticker,
-        'date': date_date,
-        'volumn': int(v[0].replace(',', '')),
-        'total_amount': int(v[1].replace(',', '')),
-        'open': float(v[2].replace(',', '')),
-        'high': float(v[3].replace(',', '')),
-        'low': float(v[4].replace(',', '')),
-        'close': float(v[5].replace(',', '')),
-        'spread': float(v[6].replace(',', '').replace('X', '')),
-        'turnover': int(v[7].replace(',', ''))
-    }
-    data_to_insert.append(to_ins)
+    # prepare to insert data
+    data_to_insert = []
+    for k, v in dic.items():
+        y, m, d = [int(i) for i in k.split('/')]
+        date_date = datetime.datetime(y+1911, m, d)
+        to_ins = {
+            'ticker': ticker,
+            'date': date_date,
+            'volumn': int(v[0].replace(',', '')),
+            'total_amount': int(v[1].replace(',', '')),
+            'open': float(v[2].replace(',', '')),
+            'high': float(v[3].replace(',', '')),
+            'low': float(v[4].replace(',', '')),
+            'close': float(v[5].replace(',', '')),
+            'spread': float(v[6].replace(',', '').replace('X', '')),
+            'turnover': int(v[7].replace(',', ''))
+        }
+        data_to_insert.append(to_ins)
+    return data_to_insert
 
+
+ticker = "2454"
+
+# (A) to db
 connect2db(data_to_insert)
 
-# import csv
-# with open('2330.csv', 'w') as csvfile:
-#     writer = csv.writer(csvfile)
-#     for x in data_to_insert:
-#             writer.writerow([x['ticker'],x['date'].strftime('%Y-%m-%d'), x['volumn'],x['total_amount'],x['open'], x['high'], x['low'], x['close'], x['spread'], x['turnover']])
+# (B) to csv
+import csv
+with open("./data/"+ticker+'.csv', 'a') as csvfile:
+    writer = csv.writer(csvfile)
+    for x in data_to_insert:
+            writer.writerow([x['ticker'],x['date'].strftime('%Y-%m-%d'), x['volumn'],x['total_amount'],x['open'], x['high'], x['low'], x['close'], x['spread'], x['turnover']])
